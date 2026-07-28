@@ -1,0 +1,21 @@
+PLAN.md
+  s_1e0e9d2214ed34::t_4bb2bc8df8d418 30
+  s_1e0e9d2214ed34::t_56f2c15e4ad1dc 60
+  s_1e0e9d2214ed34::t_384d7e5f6b9437 84-86,88,92-96,100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0764229724cf2a3a830944663ac1443bb9e5b764",
+  "prompts": {},
+  "sessions": {
+    "s_1e0e9d2214ed34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74322aa4-9128-41bb-95b1-0decd90ae6aa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Leandro Mediza <leandro.mediza@glovoapp.com>"
+    }
+  }
+}
