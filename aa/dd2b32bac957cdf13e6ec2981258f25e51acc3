@@ -1,0 +1,43 @@
+.gitignore
+  s_1e0e9d2214ed34::t_e72af851d93fe4 1-14
+.air.toml
+  s_1e0e9d2214ed34::t_ff75a4789a829f 1-52
+.golangci.yml
+  s_1e0e9d2214ed34::t_428b6b35d8bf4d 1-80
+Dockerfile
+  s_1e0e9d2214ed34::t_1c909d6cfaf86d 1-19
+README.md
+  s_1e0e9d2214ed34::t_a07255b449d504 1
+activities.go
+  s_1e0e9d2214ed34::t_21fb5a11cb51ef 1-32
+compose.yaml
+  s_1e0e9d2214ed34::t_91323cd041242b 1-35
+go.mod
+  s_1e0e9d2214ed34::t_a4e7a9de85bf88 1-35
+go.sum
+  s_1e0e9d2214ed34::t_9adbc98bfb3ce4 1-196
+shared.go
+  s_1e0e9d2214ed34::t_aab4b5c0de6967 1-3
+starter/main.go
+  s_1e0e9d2214ed34::t_859778a183a6cc 1-41
+worker/main.go
+  s_1e0e9d2214ed34::t_e25d2924a9c4cc 1-36
+workflows.go
+  s_1e0e9d2214ed34::t_90d57d8b6c0947 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aadd2b32bac957cdf13e6ec2981258f25e51acc3",
+  "prompts": {},
+  "sessions": {
+    "s_1e0e9d2214ed34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74322aa4-9128-41bb-95b1-0decd90ae6aa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Leandro Mediza <leandro.mediza@glovoapp.com>"
+    }
+  }
+}
