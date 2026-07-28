@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"log"
 
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 )
 
-// Listener drains the input queue and starts one GDPRWorkflow per message.
-// Workflow ID = "gdpr-{userID}" so a duplicate message can't start a second run —
-// Temporal rejects it instead of reprocessing.
+// Listener drains the input queue and signals the GDPRBatchWorkflow for each message.
+// Only the userID is forwarded to Temporal — PII fields (email, username) in the
+// original event are stripped at this layer and never reach the event history.
 type Listener struct {
 	temporalClient client.Client
 	input          Queue
@@ -35,6 +34,8 @@ func (l *Listener) Run(ctx context.Context) {
 	}
 }
 
+const batchWorkflowID = "gdpr-batch-collector"
+
 func (l *Listener) handle(ctx context.Context, body []byte) {
 	var req GDPRRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -42,15 +43,22 @@ func (l *Listener) handle(ctx context.Context, body []byte) {
 		return
 	}
 
-	_, err := l.temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                    "gdpr-" + req.UserID,
-		TaskQueue:             TaskQueue,
-		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-	}, GDPRWorkflow, req)
+	// SignalWithStartWorkflow atomically starts the batch workflow if not running,
+	// then sends the signal. Only userID is sent — no PII reaches Temporal.
+	_, err := l.temporalClient.SignalWithStartWorkflow(ctx,
+		batchWorkflowID,
+		"addRequest",
+		req.UserID,
+		client.StartWorkflowOptions{
+			ID:        batchWorkflowID,
+			TaskQueue: TaskQueue,
+		},
+		GDPRBatchWorkflow,
+	)
 	if err != nil {
-		log.Printf("failed to start workflow for user_id=%s: %v", req.UserID, err)
+		log.Printf("failed to signal batch workflow for user_id=%s: %v", req.UserID, err)
 		return
 	}
 
-	log.Printf("started workflow for user_id=%s request_id=%s", req.UserID, req.RequestID)
+	log.Printf("queued user_id=%s into batch collector", req.UserID)
 }

@@ -21,6 +21,7 @@ func main() {
 	defer c.Close()
 
 	w := worker.New(c, gdpr.TaskQueue, worker.Options{})
+	w.RegisterWorkflow(gdpr.GDPRBatchWorkflow)
 	w.RegisterWorkflow(gdpr.GDPRWorkflow)
 
 	activities, err := gdpr.NewActivities(c)

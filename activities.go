@@ -65,6 +65,34 @@ func (a *Activities) SendCompletionEvent(ctx context.Context, result GDPRResult)
 	return nil
 }
 
+// AnonymizeBigQueryBatch anonymizes multiple users in a single BQ DML statement.
+// One query for N users instead of N queries — avoids per-event cost.
+func (a *Activities) AnonymizeBigQueryBatch(ctx context.Context, userIDs []string) error {
+	logger := activity.GetLogger(ctx)
+	logger.Info("BigQuery batch anonymization started", "count", len(userIDs))
+
+	// TODO: replace with one DML: UPDATE/DELETE WHERE user_id IN (userIDs...)
+	for i := range userIDs {
+		activity.RecordHeartbeat(ctx, fmt.Sprintf("bq batch %d/%d", i+1, len(userIDs)))
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	logger.Info("BigQuery batch anonymization complete", "count", len(userIDs))
+	return nil
+}
+
+// AnonymizeDynamoDBBatch anonymizes multiple users in a single BatchWriteItem call.
+func (a *Activities) AnonymizeDynamoDBBatch(ctx context.Context, userIDs []string) error {
+	logger := activity.GetLogger(ctx)
+	logger.Info("DynamoDB batch anonymization started", "count", len(userIDs))
+
+	// TODO: replace with BatchWriteItem covering all userIDs
+	time.Sleep(time.Duration(len(userIDs)) * 50 * time.Millisecond)
+
+	logger.Info("DynamoDB batch anonymization complete", "count", len(userIDs))
+	return nil
+}
+
 // ExportHistoryToS3 fetches the full workflow execution history from Temporal
 // and writes it as JSON — the immutable audit trail proving every step ran.
 // TODO: replace local file write with aws-sdk-go-v2 S3 PutObject.

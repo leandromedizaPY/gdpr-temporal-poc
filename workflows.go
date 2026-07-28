@@ -8,13 +8,90 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+// GDPRBatchWorkflow is a long-running workflow that collects userIDs via signals
+// and flushes them as a batch when either maxBatchSize is reached or flushTimeout fires.
+//
+// Signal name: "addRequest", payload: userID string
+//
+// Only the userID (an internal identifier) is ever sent to Temporal —
+// PII fields (email, username) stay in the ingest layer and never reach the event history.
+func GDPRBatchWorkflow(ctx workflow.Context) error {
+	const (
+		maxBatchSize  = 10
+		flushTimeout  = 10 * time.Second
+		maxBatches    = 100 // ContinueAsNew after this many batches to keep history bounded
+	)
+
+	logger := workflow.GetLogger(ctx)
+	addCh := workflow.GetSignalChannel(ctx, "addRequest")
+	batchCount := 0
+
+	for {
+		// Wait for the first userID before starting the flush timer
+		var userID string
+		addCh.Receive(ctx, &userID)
+		pending := []string{userID}
+
+		// Start flush timer now that we have at least one item
+		timerCtx, cancelTimer := workflow.WithCancel(ctx)
+		timer := workflow.NewTimer(timerCtx, flushTimeout)
+		timerFired := false
+
+		for !timerFired && len(pending) < maxBatchSize {
+			sel := workflow.NewSelector(ctx)
+			sel.AddReceive(addCh, func(c workflow.ReceiveChannel, _ bool) {
+				var id string
+				c.Receive(ctx, &id)
+				pending = append(pending, id)
+			})
+			sel.AddFuture(timer, func(_ workflow.Future) {
+				timerFired = true
+			})
+			sel.Select(ctx)
+		}
+		cancelTimer()
+
+		logger.Info("flushing batch", "size", len(pending), "timerFired", timerFired)
+
+		bqOpts := workflow.ActivityOptions{
+			StartToCloseTimeout: 5 * time.Minute,
+			HeartbeatTimeout:    15 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+		}
+		dynamoOpts := workflow.ActivityOptions{
+			StartToCloseTimeout: time.Minute,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+		}
+
+		var a *Activities
+		bqFuture := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, bqOpts), a.AnonymizeBigQueryBatch, pending)
+		dynamoFuture := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, dynamoOpts), a.AnonymizeDynamoDBBatch, pending)
+
+		bqErr := bqFuture.Get(ctx, nil)
+		dynamoErr := dynamoFuture.Get(ctx, nil)
+
+		if bqErr != nil || dynamoErr != nil {
+			logger.Error("batch anonymization failed", "bq", bqErr, "dynamo", dynamoErr)
+		} else {
+			logger.Info("batch completed successfully", "size", len(pending))
+		}
+
+		batchCount++
+		// ContinueAsNew resets the event history to prevent it from growing unbounded.
+		// Pending signals are carried over automatically.
+		if batchCount >= maxBatches {
+			return workflow.NewContinueAsNewError(ctx, GDPRBatchWorkflow)
+		}
+	}
+}
+
+// GDPRWorkflow is kept for reference — the production flow uses GDPRBatchWorkflow.
 func GDPRWorkflow(ctx workflow.Context, req GDPRRequest) (GDPRResult, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("GDPR workflow started", "userID", req.UserID, "requestID", req.RequestID)
 
 	status := AnonymizationStatus{UserID: req.UserID}
 
-	// Query handler — lets anyone ask "what's the current state?" without interrupting the workflow
 	if err := workflow.SetQueryHandler(ctx, "status", func() (AnonymizationStatus, error) {
 		return status, nil
 	}); err != nil {
@@ -24,33 +101,22 @@ func GDPRWorkflow(ctx workflow.Context, req GDPRRequest) (GDPRResult, error) {
 	bqOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 2 * time.Minute,
 		HeartbeatTimeout:    10 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
-		},
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	}
-
 	dynamoOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
-		},
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	}
 
 	var a *Activities
 
-	// Fan-out: run BQ and DynamoDB anonymization in parallel
-	bqCtx := workflow.WithActivityOptions(ctx, bqOpts)
-	dynamoCtx := workflow.WithActivityOptions(ctx, dynamoOpts)
+	bqFuture := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, bqOpts), a.AnonymizeBigQuery, req)
+	dynamoFuture := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, dynamoOpts), a.AnonymizeDynamoDB, req)
 
-	bqFuture := workflow.ExecuteActivity(bqCtx, a.AnonymizeBigQuery, req)
-	dynamoFuture := workflow.ExecuteActivity(dynamoCtx, a.AnonymizeDynamoDB, req)
-
-	// Wait for both — collect errors independently so one failure doesn't mask the other
 	bqErr := bqFuture.Get(ctx, nil)
 	if bqErr == nil {
 		status.BQDone = true
 	}
-
 	dynamoErr := dynamoFuture.Get(ctx, nil)
 	if dynamoErr == nil {
 		status.DynamoDone = true
@@ -66,46 +132,34 @@ func GDPRWorkflow(ctx workflow.Context, req GDPRRequest) (GDPRResult, error) {
 		}, fmt.Errorf("anonymization failed: bq=%v dynamo=%v", bqErr, dynamoErr)
 	}
 
-	// Send completion event back to BnD
 	result := GDPRResult{
-		UserID:     req.UserID,
-		RequestID:  req.RequestID,
-		Status:     "completed",
-		BQDone:     true,
+		UserID:    req.UserID,
+		RequestID: req.RequestID,
+		Status:    "completed",
+		BQDone:    true,
 		DynamoDone: true,
 	}
 
 	eventOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 5,
-		},
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 5},
 	}
-	eventCtx := workflow.WithActivityOptions(ctx, eventOpts)
-
-	if err := workflow.ExecuteActivity(eventCtx, a.SendCompletionEvent, result).Get(ctx, nil); err != nil {
+	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, eventOpts), a.SendCompletionEvent, result).Get(ctx, nil); err != nil {
 		logger.Error("Failed to send completion event", "error", err)
 		return result, err
 	}
-
 	status.EventSent = true
 
-	// Export the full workflow history as an immutable audit trail.
-	// Runs as the last step so nearly all events are captured.
 	exportOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
-		},
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	}
-	exportCtx := workflow.WithActivityOptions(ctx, exportOpts)
 	info := workflow.GetInfo(ctx)
 	var s3Key string
-	if err := workflow.ExecuteActivity(exportCtx, a.ExportHistoryToS3,
+	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, exportOpts), a.ExportHistoryToS3,
 		info.WorkflowExecution.ID,
 		info.WorkflowExecution.RunID,
 	).Get(ctx, &s3Key); err != nil {
-		// Non-fatal: log and continue — the workflow result is already delivered
 		logger.Error("History export failed", "error", err)
 	} else {
 		logger.Info("History exported", "s3Key", s3Key)
