@@ -1,0 +1,25 @@
+activities.go
+  s_1e0e9d2214ed34::t_3e33611e1fdd06 68-95
+listener.go
+  s_1e0e9d2214ed34::t_3031f6efde7934 11-13,37-38,46-57,59,63
+workflows.go
+  s_1e0e9d2214ed34::t_b204980c19d472 11-88,104,108,113-114,136-139,145,147,155,159
+worker/main.go
+  s_1e0e9d2214ed34::t_c68b76312edd30 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "35c557ed27f55731f85ead28491a1c49e642e740",
+  "prompts": {},
+  "sessions": {
+    "s_1e0e9d2214ed34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74322aa4-9128-41bb-95b1-0decd90ae6aa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Leandro Mediza <leandro.mediza@glovoapp.com>"
+    }
+  }
+}
