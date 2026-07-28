@@ -1,0 +1,19 @@
+PLAN.md
+  s_1e0e9d2214ed34::t_637dba28bc7405 92-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3bea25ab823f01fadcbdb7ce7ce09469e30a3f67",
+  "prompts": {},
+  "sessions": {
+    "s_1e0e9d2214ed34": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74322aa4-9128-41bb-95b1-0decd90ae6aa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Leandro Mediza <leandro.mediza@glovoapp.com>"
+    }
+  }
+}
