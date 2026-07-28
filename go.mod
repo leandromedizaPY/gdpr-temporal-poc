@@ -1,4 +1,4 @@
-module github.com/temporal-sa/hackathon-starter/golang
+module github.com/leandromedizaPY/gdpr-temporal-poc
 
 go 1.24.0
 
