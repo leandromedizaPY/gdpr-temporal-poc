@@ -89,11 +89,6 @@ New requests can arrive while the processor is running. Using `requestID` to ide
 
 - `shared.go`: no changes needed
 
-**Test data generator:** already available — `producer/main.go` pushes synthetic events to the ingest endpoint:
-```bash
-go run ./producer -count=50
-```
-
 **Temporal features this adds:**
 - Temporal Schedules
 - Inter-workflow Query + Signal
