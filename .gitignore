@@ -12,3 +12,6 @@ tmp/
 # Env
 .env
 *.env.local
+
+# Local history export (runtime output, not source)
+history/
