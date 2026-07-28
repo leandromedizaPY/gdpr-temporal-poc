@@ -20,7 +20,7 @@ func main() {
 
 	w.RegisterWorkflow(gdpr.GDPRWorkflow)
 
-	activities, err := gdpr.NewActivities()
+	activities, err := gdpr.NewActivities(c)
 	if err != nil {
 		log.Fatalln("Error creating activities", err)
 	}

@@ -89,6 +89,28 @@ func GDPRWorkflow(ctx workflow.Context, req GDPRRequest) (GDPRResult, error) {
 	}
 
 	status.EventSent = true
+
+	// Export the full workflow history as an immutable audit trail.
+	// Runs as the last step so nearly all events are captured.
+	exportOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	}
+	exportCtx := workflow.WithActivityOptions(ctx, exportOpts)
+	info := workflow.GetInfo(ctx)
+	var s3Key string
+	if err := workflow.ExecuteActivity(exportCtx, a.ExportHistoryToS3,
+		info.WorkflowExecution.ID,
+		info.WorkflowExecution.RunID,
+	).Get(ctx, &s3Key); err != nil {
+		// Non-fatal: log and continue — the workflow result is already delivered
+		logger.Error("History export failed", "error", err)
+	} else {
+		logger.Info("History exported", "s3Key", s3Key)
+	}
+
 	logger.Info("GDPR workflow completed", "userID", req.UserID)
 	return result, nil
 }
