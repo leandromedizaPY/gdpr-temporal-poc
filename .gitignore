@@ -1,0 +1,14 @@
+# Binaries
+*.exe
+*.out
+bin/
+
+# Go
+vendor/
+
+# Air (hot reload)
+tmp/
+
+# Env
+.env
+*.env.local
