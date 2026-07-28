@@ -3,12 +3,14 @@ package gdpr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -91,6 +93,29 @@ func (a *Activities) AnonymizeDynamoDBBatch(ctx context.Context, userIDs []strin
 
 	logger.Info("DynamoDB batch anonymization complete", "count", len(userIDs))
 	return nil
+}
+
+// QueryCollectorPending queries GDPRBatchCollectorWorkflow for its current
+// pending set. Wrapped as an activity because querying another workflow is
+// a client-side operation, not available directly in workflow code.
+func (a *Activities) QueryCollectorPending(ctx context.Context) ([]GDPRRequest, error) {
+	resp, err := a.temporalClient.QueryWorkflow(ctx, CollectorWorkflowID, "", QueryPendingRequests)
+	if err != nil {
+		// The collector only exists once at least one GDPR request has ever
+		// arrived (SignalWithStartWorkflow creates it lazily) — treat "not
+		// found" as "nothing pending yet", not a failure.
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query collector: %w", err)
+	}
+
+	var pending []GDPRRequest
+	if err := resp.Get(&pending); err != nil {
+		return nil, fmt.Errorf("decode collector pending: %w", err)
+	}
+	return pending, nil
 }
 
 // ExportHistoryToS3 fetches the full workflow execution history from Temporal

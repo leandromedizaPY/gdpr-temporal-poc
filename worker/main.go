@@ -21,7 +21,9 @@ func main() {
 	defer c.Close()
 
 	w := worker.New(c, gdpr.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(gdpr.GDPRBatchWorkflow)
+	w.RegisterWorkflow(gdpr.GDPRBatchCollectorWorkflow)
+	w.RegisterWorkflow(gdpr.GDPRSchedulerWorkflow)
+	w.RegisterWorkflow(gdpr.GDPRProcessorWorkflow)
 	w.RegisterWorkflow(gdpr.GDPRWorkflow)
 
 	activities, err := gdpr.NewActivities(c)
@@ -30,10 +32,14 @@ func main() {
 	}
 	w.RegisterActivity(activities)
 
-	inputQueue := gdpr.NewInMemoryQueue(1024)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if err := gdpr.EnsureSchedulerSchedule(ctx, c); err != nil {
+		log.Fatalln("Unable to create scheduler schedule", err)
+	}
+
+	inputQueue := gdpr.NewInMemoryQueue(1024)
 
 	listener := gdpr.NewListener(c, inputQueue)
 	go listener.Run(ctx)

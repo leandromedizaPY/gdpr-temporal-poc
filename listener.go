@@ -8,9 +8,10 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
-// Listener drains the input queue and signals the GDPRBatchWorkflow for each message.
-// Only the userID is forwarded to Temporal — PII fields (email, username) in the
-// original event are stripped at this layer and never reach the event history.
+// Listener drains the input queue and signals GDPRBatchCollectorWorkflow for
+// each message. Only user_id/request_id/source are forwarded to Temporal —
+// PII fields (email, username) in the original event are stripped at the
+// ingest layer and never reach the event history.
 type Listener struct {
 	temporalClient client.Client
 	input          Queue
@@ -34,8 +35,6 @@ func (l *Listener) Run(ctx context.Context) {
 	}
 }
 
-const batchWorkflowID = "gdpr-batch-collector"
-
 func (l *Listener) handle(ctx context.Context, body []byte) {
 	var req GDPRRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -43,22 +42,27 @@ func (l *Listener) handle(ctx context.Context, body []byte) {
 		return
 	}
 
-	// SignalWithStartWorkflow atomically starts the batch workflow if not running,
-	// then sends the signal. Only userID is sent — no PII reaches Temporal.
+	// SignalWithStartWorkflow atomically starts the collector if not
+	// already running, then delivers the signal. Only
+	// user_id/request_id/source are sent — no PII reaches Temporal. The
+	// []GDPRRequest(nil) argument is the collector's initial pending state,
+	// only used the first time it's started — ignored when the signal is
+	// delivered to an already-running collector.
 	_, err := l.temporalClient.SignalWithStartWorkflow(ctx,
-		batchWorkflowID,
-		"addRequest",
-		req.UserID,
+		CollectorWorkflowID,
+		SignalAddRequest,
+		req,
 		client.StartWorkflowOptions{
-			ID:        batchWorkflowID,
+			ID:        CollectorWorkflowID,
 			TaskQueue: TaskQueue,
 		},
-		GDPRBatchWorkflow,
+		GDPRBatchCollectorWorkflow,
+		[]GDPRRequest(nil),
 	)
 	if err != nil {
-		log.Printf("failed to signal batch workflow for user_id=%s: %v", req.UserID, err)
+		log.Printf("failed to signal batch collector for request_id=%s: %v", req.RequestID, err)
 		return
 	}
 
-	log.Printf("queued user_id=%s into batch collector", req.UserID)
+	log.Printf("queued user_id=%s request_id=%s into batch collector", req.UserID, req.RequestID)
 }
