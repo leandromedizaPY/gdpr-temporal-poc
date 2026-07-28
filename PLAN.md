@@ -27,7 +27,7 @@ Replace the current AWS Step Functions-based GDPR anonymization pipeline with a 
 A long-running Temporal workflow that accumulates incoming `userID` signals and flushes them as a batch.
 
 **Flush triggers (whichever fires first):**
-- Batch reaches `maxBatchSize` (currently 10)
+- Batch reaches `maxBatchSize` (currently 10 for PoC, 1000 for the scheduled approach)
 - Internal timer fires after `flushTimeout` (currently 10s)
 
 **On flush:**
@@ -57,7 +57,7 @@ For stricter compliance, the signal payload can be reduced to `requestID` only (
 
 ### Scheduled Processor Workflow
 
-Replace the internal flush timer with a **Temporal Schedule** that triggers a dedicated processor workflow on a fixed cadence (1 min demo / 5 min production).
+Replace the internal flush timer with a **Temporal Schedule** that triggers a dedicated processor workflow on a fixed cadence (1 min demo / 5 min production). Batch size: **1000 events per run**.
 
 **Architecture:**
 
@@ -81,16 +81,23 @@ New requests can arrive while the processor is running. Using `requestID` to ide
 **Changes required:**
 
 - `workflows.go`
-  - `GDPRBatchWorkflow`: add Query handler returning `[]GDPRRequest`, add `"clearProcessed"` signal handler accepting `[]string` (requestIDs), remove internal timer
-  - New `GDPRProcessorWorkflow`: query → process → signal back
+  - `GDPRBatchWorkflow` (rename to `GDPRBatchCollectorWorkflow`): add Query handler returning `[]GDPRRequest` (pending state), add `"clearProcessed"` signal handler accepting `[]string` (requestIDs), remove internal timer
+  - New `GDPRSchedulerWorkflow`: triggered by Schedule → query collector → if empty exit → start `GDPRProcessorWorkflow` as child → signal `"clearProcessed"` with processed requestIDs
+  - New `GDPRProcessorWorkflow`: receives `[]GDPRRequest` → runs `AnonymizeBigQueryBatch` + `AnonymizeDynamoDBBatch` in parallel
 
-- `worker/main.go`: register `GDPRProcessorWorkflow`, create Temporal Schedule on startup
+- `worker/main.go`: register new workflows, create Temporal Schedule on startup (every 1 min)
 
 - `shared.go`: no changes needed
+
+**Test data generator:** already available — `producer/main.go` pushes synthetic events to the ingest endpoint:
+```bash
+go run ./producer -count=50
+```
 
 **Temporal features this adds:**
 - Temporal Schedules
 - Inter-workflow Query + Signal
+- Child workflows
 - Early exit on empty batch
 
 ---
