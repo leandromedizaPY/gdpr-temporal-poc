@@ -22,83 +22,57 @@ Replace the current AWS Step Functions-based GDPR anonymization pipeline with a 
 | Listener | `listener.go` | Drains queue, calls `SignalWithStartWorkflow` per message |
 | Producer | `producer/main.go` | Stub simulating BnD v2 publishing deletion events |
 
-### Batch Collector Workflow (`GDPRBatchWorkflow`)
+### Batch Collector Workflow (`GDPRBatchCollectorWorkflow`)
 
-A long-running Temporal workflow that accumulates incoming `userID` signals and flushes them as a batch.
+A long-running, singleton Temporal workflow (Workflow ID `gdpr-batch-collector`) that accumulates incoming `{user_id, request_id, source}` requests and holds them until told to clear them — it never calls BigQuery/DynamoDB itself.
 
-**Flush triggers (whichever fires first):**
-- Batch reaches `maxBatchSize` (currently 10 for PoC, 1000 for the scheduled approach)
-- Internal timer fires after `flushTimeout` (currently 10s)
+- **`addRequest` signal** (payload: `GDPRRequest`) — adds a request to the pending set, keyed by `request_id`. A duplicate `request_id` already pending is silently ignored (idempotency without a per-user Workflow ID).
+- **`clearProcessed` signal** (payload: `[]string` of `request_id`s) — removes exactly the named request_ids, never a blanket clear. New `addRequest` signals landing between a scheduler tick's query and its clear signal are never dropped, since only ids explicitly named are removed.
+- **`pendingRequests` query** — returns the current pending set (`[]GDPRRequest`) for inspection or for the scheduler to drain.
+- **`ContinueAsNew`** after 500 signal-processing cycles, carrying the current pending set forward, to keep the (indefinitely-running) history bounded.
 
-**On flush:**
-- `AnonymizeBigQueryBatch([]userID)` — one DML for all users in the batch
-- `AnonymizeDynamoDBBatch([]userID)` — one `BatchWriteItem` for all users
-- Both run in **parallel**
+### Scheduled Processor (`GDPRSchedulerWorkflow` + `GDPRProcessorWorkflow`)
 
-**History management:**
-- `ContinueAsNew` after 100 batches to prevent unbounded history growth
-
-**Temporal features demonstrated:**
-- `SignalWithStartWorkflow` — atomic start-or-signal
-- Durable timer — survives worker crashes
-- Parallel activities
-- `ContinueAsNew`
-- Query handler for live state inspection
-
-### PII Protection
-
-The ingest server receives the full deletion event (which may contain email, username, etc.) but only extracts `userID` + `requestID` before forwarding to Temporal. PII fields are never serialized into the event history.
-
-For stricter compliance, the signal payload can be reduced to `requestID` only (an opaque UUID), keeping the `userID ↔ requestID` mapping outside of Temporal entirely.
-
----
-
-## Still to Build
-
-### Scheduled Processor Workflow
-
-Replace the internal flush timer with a **Temporal Schedule** that triggers a dedicated processor workflow on a fixed cadence (1 min demo / 5 min production). Batch size: **1000 events per run**.
-
-**Architecture:**
+Replaces an internal flush timer with a **Temporal Schedule** (`gdpr-scheduler-schedule`, every `ProcessorInterval` — 1 minute for the demo; see `schedule.go`) that triggers `GDPRSchedulerWorkflow` on a fixed cadence:
 
 ```
 Temporal Schedule (every 1 min)
   │
   ▼
-GDPRProcessorWorkflow
-  │  1. Query GDPRBatchWorkflow → get pending []GDPRRequest {userID, requestID}
+GDPRSchedulerWorkflow
+  │  1. QueryCollectorPending activity → []GDPRRequest snapshot
   │  2. If empty → exit early
-  │  3. AnonymizeBigQueryBatch([]userID)    ─┐ parallel
-  │     AnonymizeDynamoDBBatch([]userID)    ─┘
-  │  4. Signal GDPRBatchWorkflow("clearProcessed", []requestID)
-  ▼
-GDPRBatchWorkflow removes processed requestIDs from state
+  │  3. Execute GDPRProcessorWorkflow as a CHILD workflow, passing the snapshot
+  │       ├── AnonymizeBigQueryBatch([]userID)   ─┐ parallel
+  │       ├── AnonymizeDynamoDBBatch([]userID)   ─┘
+  │       ├── SendCompletionEvent per request
+  │       └── ExportHistoryToS3 (this run's own history)
+  │  4. On child success: SignalExternalWorkflow(collector, "clearProcessed", []requestID)
+  ▼           using EXACTLY the request_ids from step 1's snapshot
+GDPRBatchCollectorWorkflow removes those request_ids from its pending state
 ```
 
-**Key design decision — use `requestID` not `userID` to clear state:**
-New requests can arrive while the processor is running. Using `requestID` to identify what was processed ensures those new arrivals are not accidentally cleared. Each `requestID` is a UUID generated at ingest time, so it uniquely identifies a specific request regardless of `userID`.
+**Key design decision — clear by `request_id`, never a blanket clear:** new requests can arrive on the collector while the scheduler/processor are running. Using the `request_id`s captured in the step-1 snapshot (rather than "clear everything") ensures requests that arrive mid-run are never accidentally dropped. Verified in `workflows_test.go`.
 
-**Changes required:**
+**On processor failure:** the scheduler does **not** signal `clearProcessed` — the batch stays pending and is retried on the next scheduled tick, instead of silently losing it.
 
-- `workflows.go`
-  - `GDPRBatchWorkflow` (rename to `GDPRBatchCollectorWorkflow`): add Query handler returning `[]GDPRRequest` (pending state), add `"clearProcessed"` signal handler accepting `[]string` (requestIDs), remove internal timer
-  - New `GDPRSchedulerWorkflow`: triggered by Schedule → query collector → if empty exit → start `GDPRProcessorWorkflow` as child → signal `"clearProcessed"` with processed requestIDs
-  - New `GDPRProcessorWorkflow`: receives `[]GDPRRequest` → runs `AnonymizeBigQueryBatch` + `AnonymizeDynamoDBBatch` in parallel
+**Changes from the previous batch-only design:**
+- `GDPRBatchWorkflow` renamed to `GDPRBatchCollectorWorkflow`; the internal flush timer/size threshold is gone — draining is now entirely schedule-driven.
+- `addRequest`'s payload changed from a bare `userID` string to the full `GDPRRequest` (needed so `request_id` is available for `clearProcessed`).
 
-- `worker/main.go`: register new workflows, create Temporal Schedule on startup (every 1 min)
+**Temporal features demonstrated:**
+- `SignalWithStartWorkflow` — atomic start-or-signal
+- Signals + Query handler for live state inspection
+- `ContinueAsNew`
+- Temporal **Schedules**
+- **Child workflows**
+- Parallel activities, retries, heartbeat
 
-- `shared.go`: no changes needed
+### PII Protection
 
-**Test data generator:**
-```bash
-go run ./producer -count=50
-```
+The ingest server receives the full deletion event (which may contain email, username, etc.) but only extracts `user_id`/`request_id`/`source` before forwarding to Temporal. PII fields are never serialized into the event history. `TestGDPRRequest_NoPIIFields` (in `workflows_test.go`) guards against a future change accidentally reintroducing a PII field into the type carried by the `addRequest` signal.
 
-**Temporal features this adds:**
-- Temporal Schedules
-- Inter-workflow Query + Signal
-- Child workflows
-- Early exit on empty batch
+For stricter compliance, the signal payload can be reduced to `request_id` only (an opaque UUID), keeping the `user_id ↔ request_id` mapping outside of Temporal entirely.
 
 ---
 
@@ -113,3 +87,4 @@ go run ./producer -count=50
 | S3 history export | `ExportHistoryToS3` → `aws-sdk-go-v2/service/s3` `PutObject` |
 | Temporal Cloud | Move from self-hosted to Temporal Cloud for managed infra |
 | Worker fleet | Deploy multiple worker replicas behind a load balancer for horizontal scale |
+| Production schedule interval | Switch `ProcessorInterval` from 1 minute (demo) to 5 minutes |
